@@ -1,0 +1,88 @@
+import numpy as np
+from scipy.linalg import svd
+from scipy.optimize import least_squares
+
+def ceres_angle_axis_to_rotation_matrix(angle_axis):
+    angle = np.linalg.norm(angle_axis)
+    if angle < np.finfo(float).eps:
+        return np.eye(3)
+    axis = angle_axis / angle
+    c = np.cos(angle)
+    s = np.sin(angle)
+    t = 1 - c
+
+    x, y, z = axis
+    return np.array([
+        [t*x*x + c, t*x*y - s*z, t*x*z + s*y],
+        [t*x*y + s*z, t*y*y + c, t*y*z - s*x],
+        [t*x*z - s*y, t*y*z + s*x, t*z*z + c]
+    ])
+
+def sampson_error(ri_data, ti_data, rj_data, tj_data, u_data, v_data):
+    Ri = ceres_angle_axis_to_rotation_matrix(ri_data)
+    ti = np.array(ti_data)
+
+    Rj = ceres_angle_axis_to_rotation_matrix(rj_data)
+    tj = np.array(tj_data)
+
+    R = np.dot(Rj, Ri.T)
+    t = np.dot(-Ri.T, ti) + tj
+
+    s = np.array([
+        [0, -t[2], t[1]],
+        [t[2], 0, -t[0]],
+        [-t[1], t[0], 0]
+    ])
+    E = np.dot(s, R)
+
+    u = np.array(u_data)
+    v = np.array(v_data)
+
+    line = np.dot(E, u / u[2])
+    d = np.dot(v.T, line)
+    residual = d / np.sqrt(line[0]**2 + line[1]**2)
+    
+    return residual
+
+class SphericalEstimator:
+    def __init__(self, correspondences, min_sample_size):
+        self.correspondences = correspondences
+        self.min_sample_size = min_sample_size
+
+    def evaluate_model_on_point(self, E, i):
+        if i >= len(self.correspondences):
+            raise ValueError(f"Index {i} out of range for correspondences.")
+        u, v = self.correspondences[i]
+        u = np.array(u)
+        v = np.array(v)
+        line = np.dot(E, u / u[2])
+        d = np.dot(v.T, line)
+        return (d**2) / (line[0]**2 + line[1]**2)
+
+    def minimal_solver(self, sample):
+        N = len(sample)
+        if N < self.min_sample_size:
+            raise ValueError(f"Sample size {N} is less than minimum sample size.")
+        
+        A = np.zeros((N, 6))
+        
+        for i, ind in enumerate(sample):
+            u, v = self.correspondences[ind]
+            u = np.array(u)
+            v = np.array(v)
+            A[i] = [
+                u[0]*v[0] - u[1]*v[1], u[0]*v[1] + u[1]*v[0],
+                u[2]*v[0], u[2]*v[1], u[0]*v[2], u[1]*v[2]
+            ]
+        
+        _, _, Vt = svd(A, full_matrices=False)
+        B = Vt[-3:].T
+
+        def objective(x):
+            # Objective function to minimize
+            C = np.random.rand(3, 3)  # Example placeholder
+            return np.dot(C, x)
+        
+        res = least_squares(objective, np.zeros(10))
+        result = res.x.reshape((3, 3))
+        return result
